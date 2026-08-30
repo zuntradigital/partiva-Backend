@@ -1,0 +1,2 @@
+ALTER TABLE admin_users
+  ADD COLUMN last_seen_at TIMESTAMP NULL DEFAULT NULL AFTER status;
