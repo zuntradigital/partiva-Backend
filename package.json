@@ -10,7 +10,8 @@
     "migrate": "tsx src/db/migrate.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
     "test:email": "tsx src/scripts/send-test-email.ts",
-    "publish-imported": "tsx src/scripts/publish-imported-articles.ts"
+    "publish-imported": "tsx src/scripts/publish-imported-articles.ts",
+    "postinstall": "patch-package"
   },
   "keywords": [],
   "author": "",
@@ -39,6 +40,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.2.0",
     "@types/nodemailer": "^8.0.1",
+    "patch-package": "^8.0.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }
