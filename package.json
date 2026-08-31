@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "node node_modules/typescript/bin/tsc 2>&1",
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
