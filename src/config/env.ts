@@ -24,7 +24,7 @@ export const env = {
   // Dashboard and public website both call public API endpoints from the browser.
   allowedOrigins: (process.env.ALLOWED_ORIGINS || "http://localhost:3000,http://localhost:3001")
     .split(",")
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean),
 
   smtp: {
