@@ -102,9 +102,23 @@ export const publicPricingRouter = Router();
 publicPricingRouter.get("/", asyncHandler(async (_req, res) => {
   const [plans, settings] = await Promise.all([
     pool.query<Plan[]>("SELECT * FROM pricing_plans WHERE active=TRUE ORDER BY display_order,id"),
-    pool.query<(RowDataPacket & { value: unknown })[]>("SELECT value FROM pricing_settings WHERE setting_key='custom_contact'"),
+    // commission_config is the new transaction-based pricing model's single
+    // source of truth (free-parts limit, free-period days, tier rates,
+    // bilingual copy) -- read alongside custom_contact from the same
+    // generic settings table rather than a new one.
+    pool.query<(RowDataPacket & { setting_key: string; value: unknown })[]>(
+      "SELECT setting_key, value FROM pricing_settings WHERE setting_key IN ('custom_contact','commission_config')"
+    ),
   ]);
-  res.json({ success: true, data: { plans: plans[0].map(map), customContact: settings[0][0]?.value ?? null } });
+  const settingsByKey = Object.fromEntries(settings[0].map((s) => [s.setting_key, s.value]));
+  res.json({
+    success: true,
+    data: {
+      plans: plans[0].map(map),
+      customContact: settingsByKey.custom_contact ?? null,
+      commissionConfig: settingsByKey.commission_config ?? null,
+    },
+  });
 }));
 
 // ---- Admin (dashboard) ----
@@ -198,4 +212,32 @@ adminPricingRouter.patch("/:id/status", asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true, data: mapAdmin(await get(id)) });
+}));
+
+// ---- Settings (generic key/value config, e.g. commission_config) ----
+// Separate from the pricing_plans workflow above -- these are simple
+// published-immediately values (no draft/review), matching the "editable
+// without rebuilding the site" requirement for the transaction-based
+// pricing model without inventing a second approval flow for it.
+const settingsKey = (raw: string) => {
+  const key = String(raw ?? "");
+  if (!/^[a-z0-9_]{1,100}$/.test(key)) throw new ApiError(422, "VALIDATION_ERROR", "Invalid settings key");
+  return key;
+};
+
+adminPricingRouter.get("/settings/:key", requirePermission("pricing", "view"), asyncHandler(async (req, res) => {
+  const key = settingsKey(String(req.params.key));
+  const [r] = await pool.query<(RowDataPacket & { value: unknown })[]>("SELECT value FROM pricing_settings WHERE setting_key=?", [key]);
+  res.json({ success: true, data: r[0]?.value ?? null });
+}));
+
+adminPricingRouter.put("/settings/:key", requirePermission("pricing", "edit"), asyncHandler(async (req, res) => {
+  const key = settingsKey(String(req.params.key));
+  const value = req.body?.value;
+  if (value === undefined) throw new ApiError(422, "VALIDATION_ERROR", "value is required");
+  await pool.query(
+    "INSERT INTO pricing_settings (setting_key, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value)",
+    [key, JSON.stringify(value)],
+  );
+  res.json({ success: true, data: value });
 }));
