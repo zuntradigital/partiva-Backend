@@ -3,10 +3,11 @@ import { ApiError } from "../../utils/apiError.js";
 import { validateArticleBlocks, isSafeImageSrc } from "../../utils/articleBlocks.js";
 import { findCategoryById } from "../categories/categories.repository.js";
 import * as articlesRepository from "./articles.repository.js";
-import type { ArticleWithDetails, PublicArticleRow, TranslationInput } from "./articles.repository.js";
+import type { ArticleListItem, ArticleWithDetails, PublicArticleListRow, PublicArticleRow, TranslationInput } from "./articles.repository.js";
 import type { ArticleTranslationRow, ContentStatus, Locale } from "../../types/db.types.js";
 import { isValidTransition, isWorkflowAction, nextStatusFor, permissionRequiredFor, type WorkflowAction } from "./articles.workflow.js";
 import { hasPermission } from "../../middleware/permissions.js";
+import { findMediaById } from "../media/media.routes.js";
 
 const isDuplicateEntryError = (error: unknown): error is QueryError =>
   typeof error === "object" && error !== null && (error as QueryError).code === "ER_DUP_ENTRY";
@@ -36,23 +37,75 @@ function readOptionalNumber(value: unknown): number | null {
   return value;
 }
 
-function buildTranslationInput(raw: unknown, locale: Locale): TranslationInput {
+interface ResolvedCover {
+  coverSrc: string | null;
+  coverMediaId: number | null;
+  coverAlt: string | null;
+  coverWidth: number | null;
+  coverHeight: number | null;
+}
+
+/**
+ * `cover.mediaId` (set by the Dashboard's Media Library picker/upload flow --
+ * see MediaPickerModal/ArticleCoverField) always wins and is resolved
+ * server-side against the real media row: src/width/height stored are that
+ * row's own values, never whatever the client happened to send alongside
+ * the id, so a client can't make an article claim a cover image it didn't
+ * actually get from the Library. Falls back to the pre-existing plain
+ * cover.src shape (validated exactly as before via isSafeImageSrc) when no
+ * mediaId is given -- this is what keeps every already-published article,
+ * and any caller that predates the Media Library integration, working
+ * unchanged.
+ */
+async function resolveCover(cover: Record<string, unknown> | null, locale: Locale): Promise<ResolvedCover> {
+  if (!cover) return { coverSrc: null, coverMediaId: null, coverAlt: null, coverWidth: null, coverHeight: null };
+
+  const mediaIdRaw = cover.mediaId;
+  if (mediaIdRaw === undefined || mediaIdRaw === null) {
+    return {
+      coverSrc: readOptionalCoverSrc(cover.src),
+      coverMediaId: null,
+      coverAlt: readOptionalString(cover.alt, 300),
+      coverWidth: readOptionalNumber(cover.width),
+      coverHeight: readOptionalNumber(cover.height),
+    };
+  }
+
+  const mediaId = Number(mediaIdRaw);
+  if (!Number.isInteger(mediaId) || mediaId <= 0) throw new ApiError(422, "VALIDATION_ERROR", "Invalid cover media reference");
+  let media: Awaited<ReturnType<typeof findMediaById>>;
+  try {
+    media = await findMediaById(mediaId);
+  } catch {
+    throw new ApiError(422, "VALIDATION_ERROR", "The selected media asset does not exist");
+  }
+
+  const altOverride = readOptionalString(cover.alt, 300);
+  const mediaAlt = locale === "ar" ? media.alt_ar : media.alt_en;
+  return {
+    coverSrc: media.storage_path,
+    coverMediaId: media.id,
+    coverAlt: altOverride ?? (mediaAlt || null),
+    coverWidth: media.width,
+    coverHeight: media.height,
+  };
+}
+
+async function buildTranslationInput(raw: unknown, locale: Locale): Promise<TranslationInput> {
   if (typeof raw !== "object" || raw === null) throw new ApiError(422, "VALIDATION_ERROR", `translations.${locale} is invalid`);
   const t = raw as Record<string, unknown>;
 
   const cover = (t.cover ?? null) as Record<string, unknown> | null;
   const seo = (t.seo ?? null) as Record<string, unknown> | null;
   const robots = seo?.robots;
+  const resolvedCover = await resolveCover(cover, locale);
 
   return {
     title: readString(t.title, "title", 300),
     slug: readString(t.slug, "slug", 200).toLowerCase(),
     excerpt: readString(t.excerpt, "excerpt", 2000),
     content: validateArticleBlocks(t.content),
-    coverSrc: cover ? readOptionalCoverSrc(cover.src) : null,
-    coverAlt: cover ? readOptionalString(cover.alt, 300) : null,
-    coverWidth: cover ? readOptionalNumber(cover.width) : null,
-    coverHeight: cover ? readOptionalNumber(cover.height) : null,
+    ...resolvedCover,
     readingTimeMinutes: readOptionalNumber(t.readingTimeMinutes),
     seoTitle: seo ? readOptionalString(seo.title, 200) : null,
     seoDescription: seo ? readOptionalString(seo.description, 300) : null,
@@ -64,7 +117,7 @@ function buildTranslationInput(raw: unknown, locale: Locale): TranslationInput {
   };
 }
 
-function readTranslations(body: Record<string, unknown>): Partial<Record<Locale, TranslationInput>> {
+async function readTranslations(body: Record<string, unknown>): Promise<Partial<Record<Locale, TranslationInput>>> {
   const raw = body.translations;
   if (typeof raw !== "object" || raw === null) throw new ApiError(422, "VALIDATION_ERROR", "translations is required");
 
@@ -72,7 +125,7 @@ function readTranslations(body: Record<string, unknown>): Partial<Record<Locale,
   for (const locale of ["ar", "en"] as const) {
     const value = (raw as Record<string, unknown>)[locale];
     if (value === undefined || value === null) continue;
-    result[locale] = buildTranslationInput(value, locale);
+    result[locale] = await buildTranslationInput(value, locale);
   }
   return result;
 }
@@ -104,7 +157,7 @@ export const createArticle = async (body: Record<string, unknown>, createdBy: nu
   if (!Number.isInteger(categoryId) || categoryId <= 0) throw new ApiError(422, "VALIDATION_ERROR", "categoryId is required");
   await assertCategoryExists(categoryId);
 
-  const translations = readTranslations(body);
+  const translations = await readTranslations(body);
   if (Object.keys(translations).length === 0) {
     throw new ApiError(422, "VALIDATION_ERROR", "At least one language's content is required");
   }
@@ -140,7 +193,7 @@ export const updateArticle = async (id: number, userId: number, roles: string[],
     await assertCategoryExists(categoryId);
   }
 
-  const translations = body.translations !== undefined ? readTranslations(body) : {};
+  const translations = body.translations !== undefined ? await readTranslations(body) : {};
   const authorName = body.authorName !== undefined ? readOptionalString(body.authorName, 150) : undefined;
   const tagIds = body.tagIds !== undefined ? readTagIds(body.tagIds) : undefined;
 
@@ -162,7 +215,7 @@ export const deleteArticle = async (id: number): Promise<void> => {
 
 export const listArticles = async () => {
   const rows = await articlesRepository.listArticlesAdmin();
-  return rows.map(mapToAdminResponse);
+  return rows.map(mapToAdminListResponse);
 };
 
 export const getArticle = async (id: number) => {
@@ -266,7 +319,7 @@ function mapTranslation(t: ArticleTranslationRow) {
     excerpt: t.excerpt,
     content: t.content,
     cover: t.cover_src
-      ? { src: t.cover_src, alt: t.cover_alt ?? "", width: t.cover_width ?? 0, height: t.cover_height ?? 0 }
+      ? { src: t.cover_src, alt: t.cover_alt ?? "", width: t.cover_width ?? 0, height: t.cover_height ?? 0, mediaId: t.cover_media_id }
       : null,
     readingTimeMinutes: t.reading_time_minutes,
     seo: {
@@ -277,6 +330,54 @@ function mapTranslation(t: ArticleTranslationRow) {
       ogDescription: t.seo_og_description ?? "",
       robots: t.seo_robots === "noindex" ? "noindex" : "index, follow",
     },
+  };
+}
+
+/** Same response shape as mapToAdminResponse/mapTranslation above, for the
+ * Blog list table only (see listArticlesAdmin in the repository) -- content
+ * and cover are placeholders since the list never reads them; opening an
+ * article (findArticleByIdAdmin -> mapToAdminResponse) still returns the
+ * genuine, complete values untouched. */
+function mapToAdminListResponse(item: ArticleListItem) {
+  const a = item.article;
+  const translations: Record<Locale, ReturnType<typeof mapListTranslation> | null> = { ar: null, en: null };
+  const translationStatus: Record<Locale, string> = { ar: "not_started", en: "not_started" };
+
+  for (const locale of ["ar", "en"] as const) {
+    const t = item.translations[locale];
+    if (t) {
+      translations[locale] = mapListTranslation(t);
+      translationStatus[locale] = t.translation_status;
+    }
+  }
+
+  return {
+    id: a.id,
+    status: a.status,
+    categoryId: a.category_id,
+    categoryNameAr: a.category_name_ar,
+    categoryNameEn: a.category_name_en,
+    authorName: a.author_name,
+    tagIds: item.tag_ids,
+    publishedAt: a.published_at,
+    scheduledFor: a.scheduled_for,
+    rejectionComment: a.rejection_comment,
+    createdAt: a.created_at,
+    updatedAt: a.updated_at,
+    translations,
+    translationStatus,
+  };
+}
+
+function mapListTranslation(t: { title: string; slug: string; excerpt: string }) {
+  return {
+    title: t.title,
+    slug: t.slug,
+    excerpt: t.excerpt,
+    content: [] as unknown[],
+    cover: null,
+    readingTimeMinutes: null,
+    seo: { title: "", description: "", canonical: "", ogTitle: "", ogDescription: "", robots: "index, follow" as const },
   };
 }
 
@@ -309,9 +410,39 @@ function mapToPublicResponse(row: PublicArticleRow) {
   };
 }
 
+/** Same shape as mapToPublicResponse, minus `content` (see PublicArticleListRow
+ * -- the Website's listing page never reads the article body, only the
+ * single-article detail fetch below does). */
+function mapToPublicListResponse(row: PublicArticleListRow) {
+  return {
+    language: row.language,
+    slug: row.slug,
+    title: row.title,
+    excerpt: row.excerpt,
+    category: row.category,
+    readMinutes: row.read_minutes ?? 0,
+    publishedAt: row.published_at,
+    cover: {
+      src: row.cover_src ?? "",
+      alt: row.cover_alt ?? "",
+      width: row.cover_width ?? 1200,
+      height: row.cover_height ?? 800,
+    },
+    content: [] as unknown[],
+    seo: {
+      title: row.seo_title || row.title,
+      description: row.seo_description || row.excerpt,
+      canonical: row.seo_canonical || "",
+      ogTitle: row.seo_og_title || row.seo_title || row.title,
+      ogDescription: row.seo_og_description || row.seo_description || row.excerpt,
+      robots: row.seo_robots === "noindex" ? "noindex" : "index, follow",
+    },
+  };
+}
+
 export const listPublishedArticles = async (locale?: string) => {
   const rows = await articlesRepository.listPublishedArticles(locale === "ar" || locale === "en" ? locale : undefined);
-  return rows.map(mapToPublicResponse);
+  return rows.map(mapToPublicListResponse);
 };
 
 export const getPublishedArticleBySlug = async (slug: string) => {

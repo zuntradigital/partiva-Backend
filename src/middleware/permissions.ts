@@ -8,6 +8,7 @@ import { ApiError } from "../utils/apiError.js";
 // no separate hardcoded UI list.
 export const PERMISSION_RESOURCES = [
   "articles", "categories_tags", "pricing", "testimonials", "faq", "contact_info", "audit_log", "pages", "media",
+  "company_requests", "contact_messages",
 ] as const;
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number];
 

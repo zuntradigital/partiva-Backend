@@ -45,14 +45,68 @@ async function attachTranslationsAndTags(articleRows: ArticleJoinRow[]): Promise
   }));
 }
 
-export const listArticlesAdmin = async (): Promise<ArticleWithDetails[]> => {
+// The admin Blog list table (see partiva-dashboard's blog/page.tsx) only
+// ever reads title/slug/translationStatus per translation -- never content
+// or cover -- yet also polls this endpoint every 15s while the page stays
+// open. attachTranslationsAndTags()'s `SELECT *` pulled the full content
+// JSON (and, before the cover-media backfill, a multi-hundred-KB base64
+// cover) into every row of every poll. This lighter variant selects only
+// the columns the list actually renders; findArticleByIdAdmin (the
+// single-article edit-page fetch, and every create/update/transition
+// response) is untouched and still returns the complete row.
+export interface ArticleListTranslationRow extends RowDataPacket {
+  article_id: number;
+  locale: Locale;
+  title: string;
+  slug: string;
+  excerpt: string;
+  translation_status: ArticleTranslationRow["translation_status"];
+}
+
+export interface ArticleListItem {
+  article: ArticleJoinRow;
+  translations: Partial<Record<Locale, ArticleListTranslationRow>>;
+  tag_ids: number[];
+}
+
+export const listArticlesAdmin = async (): Promise<ArticleListItem[]> => {
   const [articleRows] = await pool.query<ArticleJoinRow[]>(
     `SELECT a.*, c.name_ar AS category_name_ar, c.name_en AS category_name_en
      FROM articles a
      INNER JOIN categories c ON c.id = a.category_id
      ORDER BY a.updated_at DESC`
   );
-  return attachTranslationsAndTags(articleRows);
+  if (articleRows.length === 0) return [];
+  const ids = articleRows.map((a) => a.id);
+
+  const [translationRows] = await pool.query<ArticleListTranslationRow[]>(
+    "SELECT article_id, locale, title, slug, excerpt, translation_status FROM article_translations WHERE article_id IN (?)",
+    [ids]
+  );
+  const [tagRows] = await pool.query<(RowDataPacket & { article_id: number; tag_id: number })[]>(
+    "SELECT article_id, tag_id FROM article_tags WHERE article_id IN (?)",
+    [ids]
+  );
+
+  const translationsByArticle = new Map<number, Partial<Record<Locale, ArticleListTranslationRow>>>();
+  for (const t of translationRows) {
+    const bucket = translationsByArticle.get(t.article_id) ?? {};
+    bucket[t.locale] = t;
+    translationsByArticle.set(t.article_id, bucket);
+  }
+
+  const tagsByArticle = new Map<number, number[]>();
+  for (const row of tagRows) {
+    const list = tagsByArticle.get(row.article_id) ?? [];
+    list.push(row.tag_id);
+    tagsByArticle.set(row.article_id, list);
+  }
+
+  return articleRows.map((a) => ({
+    article: a,
+    translations: translationsByArticle.get(a.id) ?? {},
+    tag_ids: tagsByArticle.get(a.id) ?? [],
+  }));
 };
 
 export const findArticleByIdAdmin = async (id: number): Promise<ArticleWithDetails | null> => {
@@ -74,6 +128,7 @@ export interface TranslationInput {
   excerpt: string;
   content: unknown;
   coverSrc: string | null;
+  coverMediaId: number | null;
   coverAlt: string | null;
   coverWidth: number | null;
   coverHeight: number | null;
@@ -103,13 +158,13 @@ async function upsertTranslation(
 ): Promise<void> {
   await connection.query(
     `INSERT INTO article_translations
-       (article_id, locale, title, slug, excerpt, content, cover_src, cover_alt, cover_width, cover_height,
+       (article_id, locale, title, slug, excerpt, content, cover_src, cover_media_id, cover_alt, cover_width, cover_height,
         reading_time_minutes, seo_title, seo_description, seo_canonical, seo_og_title, seo_og_description,
         seo_robots, translation_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        title = VALUES(title), slug = VALUES(slug), excerpt = VALUES(excerpt), content = VALUES(content),
-       cover_src = VALUES(cover_src), cover_alt = VALUES(cover_alt),
+       cover_src = VALUES(cover_src), cover_media_id = VALUES(cover_media_id), cover_alt = VALUES(cover_alt),
        cover_width = VALUES(cover_width), cover_height = VALUES(cover_height),
        reading_time_minutes = VALUES(reading_time_minutes),
        seo_title = VALUES(seo_title), seo_description = VALUES(seo_description),
@@ -124,6 +179,7 @@ async function upsertTranslation(
       t.excerpt,
       JSON.stringify(t.content),
       t.coverSrc,
+      t.coverMediaId,
       t.coverAlt,
       t.coverWidth,
       t.coverHeight,
@@ -290,9 +346,54 @@ const PUBLIC_SELECT = `
   WHERE a.status = 'published'
 `;
 
-export const listPublishedArticles = async (locale?: Locale): Promise<PublicArticleRow[]> => {
-  const sql = locale ? `${PUBLIC_SELECT} AND at.locale = ? ORDER BY a.published_at DESC` : `${PUBLIC_SELECT} ORDER BY a.published_at DESC`;
-  const [rows] = await pool.query<PublicArticleRow[]>(sql, locale ? [locale] : []);
+// The Website's listing page (ArticlesList/ArticleCard) never reads
+// `content` -- only the single-article detail fetch (findPublishedBySlug,
+// below) does -- so the list query omits it. Same cover-media backfill as
+// the admin list above already shrank cover_src down to a short URL; this
+// removes the other bulk of unnecessary per-row payload (the full body,
+// which averages ~14KB/translation) on top of that.
+export interface PublicArticleListRow extends RowDataPacket {
+  language: Locale;
+  slug: string;
+  title: string;
+  excerpt: string;
+  category: string;
+  read_minutes: number | null;
+  published_at: Date;
+  cover_src: string | null;
+  cover_alt: string | null;
+  cover_width: number | null;
+  cover_height: number | null;
+  seo_title: string | null;
+  seo_description: string | null;
+  seo_canonical: string | null;
+  seo_og_title: string | null;
+  seo_og_description: string | null;
+  seo_robots: string | null;
+}
+
+const PUBLIC_LIST_SELECT = `
+  SELECT
+    at.locale AS language,
+    at.slug,
+    at.title,
+    at.excerpt,
+    CASE WHEN at.locale = 'ar' THEN c.name_ar ELSE c.name_en END AS category,
+    at.reading_time_minutes AS read_minutes,
+    a.published_at,
+    at.cover_src, at.cover_alt, at.cover_width, at.cover_height,
+    at.seo_title, at.seo_description, at.seo_canonical, at.seo_og_title, at.seo_og_description, at.seo_robots
+  FROM article_translations at
+  INNER JOIN articles a ON a.id = at.article_id
+  INNER JOIN categories c ON c.id = a.category_id
+  WHERE a.status = 'published'
+`;
+
+export const listPublishedArticles = async (locale?: Locale): Promise<PublicArticleListRow[]> => {
+  const sql = locale
+    ? `${PUBLIC_LIST_SELECT} AND at.locale = ? ORDER BY a.published_at DESC`
+    : `${PUBLIC_LIST_SELECT} ORDER BY a.published_at DESC`;
+  const [rows] = await pool.query<PublicArticleListRow[]>(sql, locale ? [locale] : []);
   return rows;
 };
 

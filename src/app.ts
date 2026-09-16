@@ -1,3 +1,4 @@
+import path from "node:path";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -18,10 +19,13 @@ import { adminFaqRouter, publicFaqRouter } from "./modules/faq/faq.routes.js";
 import { adminContactRouter, publicContactRouter } from "./modules/contact/contact.routes.js";
 import { adminPagesRouter, publicPagesRouter } from "./modules/pages/pages.routes.js";
 import { adminMediaRouter, publicMediaRouter } from "./modules/media/media.routes.js";
+import { adminCompanyRequestsRouter, publicCompanyRequestsRouter } from "./modules/company-requests/company-requests.routes.js";
+import { adminContactMessagesRouter, publicContactMessagesRouter } from "./modules/contact-messages/contact-messages.routes.js";
 import { adminAuditRouter, adminNotificationsRouter } from "./modules/audit/audit.routes.js";
 import { auditLogMiddleware } from "./middleware/auditLog.middleware.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { env } from "./config/env.js";
+import { UPLOADS_ROOT, MEDIA_UPLOADS_URL_PREFIX } from "./config/storage.js";
 
 const app = express();
 
@@ -32,6 +36,23 @@ app.use(
     origin: env.allowedOrigins,
     credentials: true,
   })
+);
+
+// Real, on-disk uploaded media (Media Library assets / article covers --
+// see modules/media/media.routes.ts's POST /upload). Served under the exact
+// prefix media.storage_path values use. helmet()'s default
+// Cross-Origin-Resource-Policy is "same-origin", which would silently block
+// the public Website (a different origin, e.g. partiva.tech vs
+// backend.partiva.tech) from ever loading these images -- relaxed to
+// "cross-origin" for this one static route only, everything else keeps
+// helmet's stricter default.
+app.use(
+  MEDIA_UPLOADS_URL_PREFIX,
+  (req, res, next) => {
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(path.join(UPLOADS_ROOT, "media"), { maxAge: "30d", index: false })
 );
 
 // Inline article images and the featured cover are now uploaded from the
@@ -102,6 +123,10 @@ app.use("/api/pages", publicPagesRouter);
 app.use("/api/admin/pages", adminPagesRouter);
 app.use("/api/media", publicMediaRouter);
 app.use("/api/admin/media", adminMediaRouter);
+app.use("/api/company-requests", publicCompanyRequestsRouter);
+app.use("/api/admin/company-requests", adminCompanyRequestsRouter);
+app.use("/api/contact-messages", publicContactMessagesRouter);
+app.use("/api/admin/contact-messages", adminContactMessagesRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

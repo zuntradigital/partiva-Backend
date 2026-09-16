@@ -235,6 +235,27 @@ adminPricingRouter.put("/settings/:key", requirePermission("pricing", "edit"), a
   const key = settingsKey(String(req.params.key));
   const value = req.body?.value;
   if (value === undefined) throw new ApiError(422, "VALIDATION_ERROR", "value is required");
+
+  // SRS §28 (Change History): read the value exactly as it stood right
+  // before this write, so the audit log (auditLog.middleware.ts, via
+  // res.locals) can record a true previous-vs-new diff instead of just the
+  // fact that *a* change happened. Its generic extractDetails() only reads
+  // flat primitive body fields and this body is { value: {...object...} },
+  // so both sides are supplied explicitly here rather than left to that
+  // fallback.
+  const [existing] = await pool.query<(RowDataPacket & { value: unknown })[]>(
+    "SELECT value FROM pricing_settings WHERE setting_key=?", [key]
+  );
+  if (existing[0]) res.locals.auditPreviousValue = JSON.stringify(existing[0].value);
+  res.locals.auditDetails = JSON.stringify(value);
+  // Monetization Master Change Directive v1.0 §15 ("Reason / Change Note"):
+  // optional free-text explanation for the change, carried through to the
+  // same audit entry. Not required -- nothing in the Directive or the SRS
+  // mandates forcing an admin to justify every edit, so this only records
+  // one if the caller provides it.
+  const reason = req.body?.reason;
+  if (typeof reason === "string" && reason.trim()) res.locals.auditReason = reason.trim().slice(0, 500);
+
   await pool.query(
     "INSERT INTO pricing_settings (setting_key, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value)",
     [key, JSON.stringify(value)],

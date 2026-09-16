@@ -24,3 +24,9 @@ pnpm-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Uploaded media files (real, disk-stored assets referenced by the `media`
+# table's storage_path -- the directory itself is tracked via .gitkeep so it
+# always exists, but its contents are per-environment, not source.
+uploads/media/*
+!uploads/media/.gitkeep

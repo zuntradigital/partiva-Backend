@@ -10,7 +10,8 @@
     "migrate": "tsx src/db/migrate.ts",
     "test": "tsx --test src/__tests__/*.test.ts",
     "test:email": "tsx src/scripts/send-test-email.ts",
-    "publish-imported": "tsx src/scripts/publish-imported-articles.ts"
+    "publish-imported": "tsx src/scripts/publish-imported-articles.ts",
+    "backfill-cover-media": "tsx src/scripts/backfill-article-cover-media.ts"
   },
   "keywords": [],
   "author": "",
@@ -27,7 +28,9 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "helmet": "^8.3.0",
+    "image-size": "^2.0.4",
     "jsonwebtoken": "^9.0.3",
+    "multer": "^2.4.0",
     "mysql2": "^3.23.3",
     "nodemailer": "^9.0.5"
   },
@@ -37,6 +40,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.2.0",
     "@types/node": "^26.2.0",
     "@types/nodemailer": "^8.0.1",
     "tsx": "^4.23.12",

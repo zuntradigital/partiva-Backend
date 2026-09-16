@@ -8,7 +8,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 type AuditRow = RowDataPacket & {
   id: number; user_id: number | null; user_name: string | null; user_email: string | null;
   action: string; resource_type: string; resource_id: string | null; resource_label: string | null;
-  details: string | null; result: "success" | "failure"; created_at: Date;
+  details: string | null; previous_value: string | null; reason: string | null; result: "success" | "failure"; created_at: Date;
 };
 
 const mapEntry = (r: AuditRow) => ({
@@ -18,7 +18,9 @@ const mapEntry = (r: AuditRow) => ({
   resourceType: r.resource_type,
   resourceId: r.resource_id ?? "",
   resourceLabel: r.resource_label ?? r.resource_type,
+  previousValue: r.previous_value ?? undefined,
   newValue: r.details ?? undefined,
+  reason: r.reason ?? undefined,
   timestamp: r.created_at,
   result: r.result,
 });

@@ -108,6 +108,7 @@ export interface ArticleTranslationRow {
   excerpt: string;
   content: ArticleBlock[];
   cover_src: string | null;
+  cover_media_id: number | null;
   cover_alt: string | null;
   cover_width: number | null;
   cover_height: number | null;
