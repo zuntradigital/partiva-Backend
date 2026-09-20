@@ -305,6 +305,22 @@ export const setArticleStatus = async (
   await pool.query(`UPDATE articles SET ${sets.join(", ")} WHERE id = ?`, values);
 };
 
+/** Media Library workflow: brings an article that was auto-archived because its image was deleted back to the
+ * status it had before -- only if it still carries that marker AND is still Archived (an article an editor
+ * archived by hand has no marker, so it is never touched). Returns whether it was restored. */
+export const restoreArticleFromImageArchive = async (id: number): Promise<boolean> => {
+  const [result] = await pool.query<ResultSetHeader>(
+    "UPDATE articles SET status = image_archived_from, image_archived_from = NULL WHERE id = ? AND status = 'archived' AND image_archived_from IS NOT NULL",
+    [id]
+  );
+  return result.affectedRows > 0;
+};
+
+/** Any explicit workflow transition supersedes the automatic image archive. */
+export const clearImageArchiveMarker = async (id: number): Promise<void> => {
+  await pool.query("UPDATE articles SET image_archived_from = NULL WHERE id = ? AND image_archived_from IS NOT NULL", [id]);
+};
+
 // ---- Public (website) queries -- published articles only ----
 
 export interface PublicArticleRow extends RowDataPacket {

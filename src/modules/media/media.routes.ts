@@ -392,27 +392,112 @@ async function unlinkIfOwnedUpload(storagePath: string): Promise<void> {
   // uploads directory -- storedFilename always comes from our own
   // crypto.randomUUID()-based naming, so this should never actually trigger.
   if (storedFilename.includes("/") || storedFilename.includes("..")) return;
-  await fs.promises.unlink(path.join(MEDIA_UPLOADS_DIR, storedFilename)).catch((err) => {
+  await fs.promises.unlink(path.join(MEDIA_UPLOADS_DIR, storedFilename)).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return; // already gone from storage: nothing left to remove
     console.warn(`[media] Failed to remove uploaded file for deleted/replaced media: ${storedFilename}`, err);
   });
 }
 
-// Safe deletion (SRS-style requirement): an asset currently referenced by
-// any Website page/section OR any article's cover cannot be deleted -- the
-// Website/article would otherwise break. The caller must remove/replace
-// those usages first (unlink the page placement, or change the article's
-// cover image).
-adminMediaRouter.delete("/:id", requirePermission("media", "delete"), asyncHandler(async (req, res) => {
-  const media = await getMediaById(Number(req.params.id));
-  const [usage] = await pool.query<UsageRow[]>(`${USAGE_JOIN} WHERE mu.media_id = ?`, [media.id]);
-  const articleUsage = await getArticleUsageFor(media.id);
-  if (usage.length > 0 || articleUsage.length > 0) {
-    const pagePlaces = usage.map((u) => (u.route ? `${u.title_ar ?? u.route} — ${u.section}` : `عام — ${u.section}`));
-    const articlePlaces = articleUsage.map((u) => `مقال: ${u.title} (${u.locale === "ar" ? "عربي" : "إنجليزي"})`);
-    const places = [...pagePlaces, ...articlePlaces].join("، ");
-    throw new ApiError(409, "MEDIA_IN_USE", `لا يمكن حذف هذا الأصل لأنه مستخدم حاليًا في: ${places}. أزل أو استبدل هذه الاستخدامات أولًا.`);
+// ---- Deletion -------------------------------------------------------------
+//
+// Deleting an image is never blocked, whatever uses it. In one transaction:
+//   1. every article translation that uses the image loses it (cover fields
+//      cleared) -- the article itself, all its content and its other language
+//      are untouched;
+//   2. every article that lost an image and is not already Archived is moved to
+//      Archived automatically, remembering the status it had
+//      (articles.image_archived_from, migration 038) so it can return to it when
+//      a new image is added (see articles.service.ts updateArticle);
+//   3. page/section placements (media_usage) are removed -- the Website falls
+//      back to that route/section's built-in default image (HeroSection/
+//      CTASection/Navbar/Footer `?? "/images/..."`);
+//   4. the media row is deleted.
+// The stored file is removed AFTER the commit (a rolled-back delete never loses
+// the file; a failed unlink can never undo a delete) -- see unlinkIfOwnedUpload
+// for which files this module owns.
+//
+// An article whose cover_src still holds this upload's path without a
+// cover_media_id (saved before migration 036 linked covers to media rows) is
+// treated as using it too, otherwise it would keep pointing at a file that no
+// longer exists.
+type Queryable = { query: (sql: string, params?: unknown[]) => Promise<[any, any]> };
+export type MediaDb = Queryable & {
+  getConnection: () => Promise<
+    Queryable & { beginTransaction: () => Promise<void>; commit: () => Promise<void>; rollback: () => Promise<void>; release: () => void }
+  >;
+};
+
+export type DeleteMediaResult = { id: number; removedUsages: number; articleImagesRemoved: number; articlesArchived: number };
+
+export async function deleteMediaAsset(
+  db: MediaDb,
+  id: number,
+  opts: { removeStoredFile?: (storagePath: string) => Promise<void> } = {}
+): Promise<DeleteMediaResult> {
+  const [mediaRows] = (await db.query("SELECT * FROM media WHERE id = ?", [id])) as [MediaRow[], unknown];
+  const media = mediaRows[0];
+  if (!media) throw new ApiError(404, "NOT_FOUND", "Media not found");
+
+  const [usage] = (await db.query(`${USAGE_JOIN} WHERE mu.media_id = ?`, [media.id])) as [UsageRow[], unknown];
+
+  const ownedUpload = media.storage_path.startsWith(`${MEDIA_UPLOADS_URL_PREFIX}/`);
+  const [affected] = (await db.query(
+    `SELECT at.id, at.article_id, a.status
+     FROM article_translations at INNER JOIN articles a ON a.id = at.article_id
+     WHERE at.cover_media_id = ?${ownedUpload ? " OR at.cover_src = ?" : ""}`,
+    ownedUpload ? [media.id, media.storage_path] : [media.id]
+  )) as [{ id: number; article_id: number; status: string }[], unknown];
+
+  const connection = await db.getConnection();
+  let articlesArchived = 0;
+  try {
+    await connection.beginTransaction();
+    if (affected.length > 0) {
+      await connection.query(
+        "UPDATE article_translations SET cover_media_id = NULL, cover_src = NULL, cover_alt = NULL, cover_width = NULL, cover_height = NULL WHERE id IN (?)",
+        [affected.map((t) => t.id)]
+      );
+      // MySQL evaluates single-table SET assignments left to right, so image_archived_from receives the
+      // status the article had before it becomes 'archived'. Already-archived articles are left alone.
+      let r: ResultSetHeader;
+      try {
+        [r] = (await connection.query(
+          "UPDATE articles SET image_archived_from = status, status = 'archived' WHERE id IN (?) AND status <> 'archived'",
+          [[...new Set(affected.map((t) => t.article_id))]]
+        )) as [ResultSetHeader, unknown];
+      } catch (error) {
+        // Migration 038 adds articles.image_archived_from. If the code is deployed before that migration ran,
+        // say exactly that (nothing has been changed: the transaction below rolls back) instead of a generic 500.
+        if ((error as { code?: string }).code === "ER_BAD_FIELD_ERROR" && String((error as Error).message).includes("image_archived_from")) {
+          throw new ApiError(
+            503,
+            "MIGRATION_REQUIRED",
+            "Database migration 038_add_article_image_archive_marker.sql has not been applied, so an image used by an article cannot be deleted yet. Nothing was changed. Run the migration (npm run migrate) and try again. / لم يتم تطبيق تحديث قاعدة البيانات 038، لذلك لا يمكن حذف صورة مستخدمة في مقال بعد. لم يتغير أي شيء. شغّل التحديث ثم أعد المحاولة."
+          );
+        }
+        throw error;
+      }
+      articlesArchived = r.affectedRows ?? 0;
+    }
+    await connection.query("DELETE FROM media_usage WHERE media_id = ?", [media.id]);
+    await connection.query("DELETE FROM media WHERE id = ?", [media.id]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
-  await pool.query("DELETE FROM media WHERE id = ?", [media.id]);
-  await unlinkIfOwnedUpload(media.storage_path);
-  res.json({ success: true, data: { id: media.id } });
+
+  await (opts.removeStoredFile ?? unlinkIfOwnedUpload)(media.storage_path);
+  return { id: media.id, removedUsages: usage.length, articleImagesRemoved: affected.length, articlesArchived };
+}
+
+adminMediaRouter.delete("/:id", requirePermission("media", "delete"), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw new ApiError(404, "NOT_FOUND", "Media not found");
+  const result = await deleteMediaAsset(pool as unknown as MediaDb, id);
+  // Recorded by the generic audit middleware alongside the DELETE itself.
+  res.locals.auditDetails = `removedUsages=${result.removedUsages}, articleImagesRemoved=${result.articleImagesRemoved}, articlesArchived=${result.articlesArchived}`;
+  res.json({ success: true, data: result });
 }));

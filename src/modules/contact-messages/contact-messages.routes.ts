@@ -5,6 +5,7 @@ import { requireAuth } from "../../middleware/auth.middleware.js";
 import { requirePermission } from "../../middleware/permissions.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
+import { verifyRecaptcha } from "../../utils/verifyRecaptcha.js";
 
 type InquiryType = "sales" | "support" | "partnership" | "press" | "other";
 type ContactMessageStatus = "new" | "read" | "replied";
@@ -37,8 +38,10 @@ const INQUIRY_TYPES: InquiryType[] = ["sales", "support", "partnership", "press"
 const STATUSES: ContactMessageStatus[] = ["new", "read", "replied"];
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Matches the website's own PHONE_PATTERN (formValidation.ts) -- optional here.
-const PHONE_RE = /^(?:\+966|0)?5\d{8}$/;
+// Matches the website's own PHONE_PATTERN (formValidation.ts) exactly, and
+// company-requests.routes.ts's PHONE_RE -- one rule everywhere: exactly 11
+// digits, nothing else. Optional here (phone itself is not required).
+const PHONE_RE = /^\d{11}$/;
 const MESSAGE_MIN_LENGTH = 10;
 
 function str(v: unknown, field: string, maxLen: number, needed = true): string {
@@ -84,6 +87,15 @@ export const publicContactMessagesRouter = Router();
 publicContactMessagesRouter.post(
   "/",
   asyncHandler(async (req, res) => {
+    // "Are you a robot?" verification (Directive: every public lead-capture
+    // form) -- checked server-side against Google's own siteverify API
+    // before any validation or write happens. A missing/invalid/expired
+    // token is rejected the same way regardless of which case it is; the
+    // client-side widget (Recaptcha.tsx) is a UX convenience, not the
+    // actual security boundary.
+    const recaptchaOk = await verifyRecaptcha((req.body ?? {}).recaptchaToken, req.ip);
+    if (!recaptchaOk) throw new ApiError(422, "RECAPTCHA_FAILED", "Please complete the verification and try again.");
+
     const input = readContactMessageBody(req.body ?? {});
     const [result] = await pool.query<ResultSetHeader>(
       `INSERT INTO contact_messages (full_name, email, phone, inquiry_type, message) VALUES (?, ?, ?, ?, ?)`,

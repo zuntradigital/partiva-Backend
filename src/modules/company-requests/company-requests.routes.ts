@@ -5,6 +5,7 @@ import { requireAuth } from "../../middleware/auth.middleware.js";
 import { requirePermission } from "../../middleware/permissions.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
+import { verifyRecaptcha } from "../../utils/verifyRecaptcha.js";
 
 type BusinessActivity = "retail" | "wholesale" | "importer" | "workshop";
 type CompanyRequestStatus = "new" | "contacted" | "closed";
@@ -103,6 +104,13 @@ export const publicCompanyRequestsRouter = Router();
 publicCompanyRequestsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
+    // "Are you a robot?" verification (Directive: every public lead-capture
+    // form) -- checked server-side against Google's own siteverify API
+    // before any validation or write happens. See contact-messages.routes.ts
+    // for the identical guard on that other public form.
+    const recaptchaOk = await verifyRecaptcha((req.body ?? {}).recaptchaToken, req.ip);
+    if (!recaptchaOk) throw new ApiError(422, "RECAPTCHA_FAILED", "Please complete the verification and try again.");
+
     const input = readCompanyRequestBody(req.body ?? {});
 
     try {

@@ -204,7 +204,18 @@ export const updateArticle = async (id: number, userId: number, roles: string[],
     throw error;
   }
 
-  const updated = await articlesRepository.findArticleByIdAdmin(id);
+  let updated = await articlesRepository.findArticleByIdAdmin(id);
+
+  // Media Library workflow: an article archived automatically because its image was deleted comes back to
+  // the status it had as soon as every language it has carries an image again (i.e. a new image was added).
+  if (updated && updated.status === "archived" && updated.image_archived_from) {
+    const translations = Object.values(updated.translations);
+    if (translations.length > 0 && translations.every((t) => !!t?.cover_src)) {
+      if (await articlesRepository.restoreArticleFromImageArchive(id)) {
+        updated = await articlesRepository.findArticleByIdAdmin(id);
+      }
+    }
+  }
   return mapToAdminResponse(updated!);
 };
 
@@ -277,6 +288,9 @@ export const transitionArticleStatus = async (id: number, userId: number, roles:
   } else {
     await articlesRepository.setArticleStatus(id, nextStatusFor(action));
   }
+
+  // An explicit workflow action supersedes the automatic image archive (see restoreArticleFromImageArchive).
+  if (article.image_archived_from) await articlesRepository.clearImageArchiveMarker(id);
 
   const updated = await articlesRepository.findArticleByIdAdmin(id);
   return mapToAdminResponse(updated!);

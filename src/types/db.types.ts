@@ -91,6 +91,9 @@ export interface ArticleRow {
   category_id: number;
   author_name: string | null;
   status: ContentStatus;
+  /** Set only while the article is Archived BECAUSE its image was deleted from the Media Library
+   * (migration 038): the status to return to once a new image is added. NULL otherwise. */
+  image_archived_from?: ContentStatus | null;
   published_at: Date | null;
   scheduled_for: Date | null;
   rejection_comment: string | null;
