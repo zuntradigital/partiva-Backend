@@ -6,6 +6,7 @@ import { requirePermission } from "../../middleware/permissions.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
 import { verifyRecaptcha } from "../../utils/verifyRecaptcha.js";
+import { PHONE_RE } from "../../utils/phone.js";
 
 type BusinessActivity = "retail" | "wholesale" | "importer" | "workshop";
 type CompanyRequestStatus = "new" | "contacted" | "closed";
@@ -51,9 +52,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // 10-digit placeholder pending Product/Legal confirmation (same WEB-DEC-07
 // note as the frontend).
 const CR_NUMBER_RE = /^\d{10}$/;
-// Matches the website's own COMPANY_PHONE_PATTERN exactly (formValidation.ts):
-// exactly 11 digits, digits only, no country/format assumptions.
-const PHONE_RE = /^\d{11}$/;
+// Phone: the shared rule in utils/phone.ts (exactly 10 digits, digits only).
 
 function str(v: unknown, field: string, maxLen: number, needed = true): string {
   if (v === undefined || v === null || v === "") {
@@ -64,7 +63,7 @@ function str(v: unknown, field: string, maxLen: number, needed = true): string {
   return v.trim();
 }
 
-function readCompanyRequestBody(body: Record<string, unknown>) {
+export function readCompanyRequestBody(body: Record<string, unknown>) {
   const tradeName = str(body.tradeName, "tradeName", 150);
   const crNumber = str(body.crNumber, "crNumber", 20);
   if (!CR_NUMBER_RE.test(crNumber)) throw new ApiError(422, "VALIDATION_ERROR", "Invalid crNumber");

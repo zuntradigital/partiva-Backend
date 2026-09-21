@@ -6,6 +6,7 @@ import { requirePermission } from "../../middleware/permissions.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
 import { verifyRecaptcha } from "../../utils/verifyRecaptcha.js";
+import { PHONE_RE } from "../../utils/phone.js";
 
 type InquiryType = "sales" | "support" | "partnership" | "press" | "other";
 type ContactMessageStatus = "new" | "read" | "replied";
@@ -38,10 +39,8 @@ const INQUIRY_TYPES: InquiryType[] = ["sales", "support", "partnership", "press"
 const STATUSES: ContactMessageStatus[] = ["new", "read", "replied"];
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Matches the website's own PHONE_PATTERN (formValidation.ts) exactly, and
-// company-requests.routes.ts's PHONE_RE -- one rule everywhere: exactly 11
-// digits, nothing else. Optional here (phone itself is not required).
-const PHONE_RE = /^\d{11}$/;
+// Phone: the shared rule in utils/phone.ts (exactly 10 digits, nothing else).
+// Optional here (phone itself is not required).
 const MESSAGE_MIN_LENGTH = 10;
 
 function str(v: unknown, field: string, maxLen: number, needed = true): string {
@@ -53,7 +52,7 @@ function str(v: unknown, field: string, maxLen: number, needed = true): string {
   return v.trim();
 }
 
-function readContactMessageBody(body: Record<string, unknown>) {
+export function readContactMessageBody(body: Record<string, unknown>) {
   const fullName = str(body.fullName, "fullName", 100);
   const email = str(body.email, "email", 254);
   if (!EMAIL_RE.test(email)) throw new ApiError(422, "VALIDATION_ERROR", "Invalid email");
