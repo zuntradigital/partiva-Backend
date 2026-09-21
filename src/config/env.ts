@@ -38,12 +38,6 @@ export const env = {
     password: process.env.SMTP_PASSWORD || "",
     from: process.env.SMTP_FROM || "",
   },
-
-  // Secret key for Google reCAPTCHA v2 server-side verification (see
-  // utils/verifyRecaptcha.ts) -- guards every public lead-capture form
-  // (contact-messages, company-requests). The matching public site key
-  // lives in the Website's own env as NEXT_PUBLIC_RECAPTCHA_SITE_KEY.
-  recaptchaSecretKey: process.env.RECAPTCHA_SECRET_KEY || "",
 };
 
 const requiredVars: Array<[string, string]> = [
@@ -59,7 +53,6 @@ const requiredVars: Array<[string, string]> = [
   // Required here so that failure mode is a loud startup error instead of a
   // support ticket.
   ["ADMIN_APP_URL", process.env.ADMIN_APP_URL || ""],
-  ["RECAPTCHA_SECRET_KEY", env.recaptchaSecretKey],
 ];
 
 const missing = requiredVars.filter(([, value]) => !value).map(([name]) => name);

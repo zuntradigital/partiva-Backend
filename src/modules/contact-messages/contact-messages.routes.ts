@@ -5,7 +5,6 @@ import { requireAuth } from "../../middleware/auth.middleware.js";
 import { requirePermission } from "../../middleware/permissions.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/apiError.js";
-import { verifyRecaptcha } from "../../utils/verifyRecaptcha.js";
 import { PHONE_RE } from "../../utils/phone.js";
 
 type InquiryType = "sales" | "support" | "partnership" | "press" | "other";
@@ -86,15 +85,6 @@ export const publicContactMessagesRouter = Router();
 publicContactMessagesRouter.post(
   "/",
   asyncHandler(async (req, res) => {
-    // "Are you a robot?" verification (Directive: every public lead-capture
-    // form) -- checked server-side against Google's own siteverify API
-    // before any validation or write happens. A missing/invalid/expired
-    // token is rejected the same way regardless of which case it is; the
-    // client-side widget (Recaptcha.tsx) is a UX convenience, not the
-    // actual security boundary.
-    const recaptchaOk = await verifyRecaptcha((req.body ?? {}).recaptchaToken, req.ip);
-    if (!recaptchaOk) throw new ApiError(422, "RECAPTCHA_FAILED", "Please complete the verification and try again.");
-
     const input = readContactMessageBody(req.body ?? {});
     const [result] = await pool.query<ResultSetHeader>(
       `INSERT INTO contact_messages (full_name, email, phone, inquiry_type, message) VALUES (?, ?, ?, ?, ?)`,
