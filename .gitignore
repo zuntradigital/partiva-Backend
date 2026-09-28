@@ -30,3 +30,5 @@ pnpm-debug.log*
 # always exists, but its contents are per-environment, not source.
 uploads/media/*
 !uploads/media/.gitkeep
+# Local AI/dev-assistant tooling (never part of the app build or deployment)
+.claude/
