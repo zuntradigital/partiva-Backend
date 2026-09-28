@@ -53,7 +53,7 @@ npm run dev
 
 ## Environment Variables
 
-See `.env.example` for the full list (never commit real values). Key variables:
+See `.env.example` for the full list (never commit real values). `.env` is for **local development only** and must point at a local MySQL: when the app runs from source (`npm run dev`, `npm run migrate`, the maintenance scripts) it refuses to start against any non-loopback `DB_HOST` unless `NODE_ENV=production` is set explicitly. Production values belong in the host's environment (a local, gitignored `.env.production` may hold a copy; it is never loaded automatically). Key variables:
 
 | Variable | Purpose |
 |---|---|

@@ -1,10 +1,10 @@
 # Dependencies
 node_modules/
 
-# Environment variables
+# Environment variables (real secrets) -- only .env.example is tracked
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Build output
 dist/

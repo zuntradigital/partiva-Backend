@@ -60,3 +60,22 @@ const missing = requiredVars.filter(([, value]) => !value).map(([name]) => name)
 if (missing.length > 0) {
   throw new Error(`Missing required environment variable(s): ${missing.join(", ")}`);
 }
+
+// Local development must never reach the production database by accident.
+// Running from TypeScript source (tsx: `npm run dev`, `npm run migrate`, the
+// maintenance scripts, tests) is always treated as local development unless
+// NODE_ENV=production is set explicitly, and then DB_HOST must be a loopback
+// address. The compiled build (`npm start` / index.js -> dist/) is the
+// deployment artifact and keeps using whatever DB the host environment
+// provides.
+const LOCAL_DB_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const runningFromSource = __filename.endsWith(".ts");
+const isProduction = process.env.NODE_ENV === "production";
+
+if (runningFromSource && !isProduction && !LOCAL_DB_HOSTS.has(env.dbHost.trim().toLowerCase())) {
+  throw new Error(
+    `Refusing to start: DB_HOST="${env.dbHost}" is not a local database. ` +
+      "Local development may only use a local MySQL (localhost/127.0.0.1). " +
+      "Set NODE_ENV=production explicitly to target a remote/production database.",
+  );
+}
