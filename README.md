@@ -1,4 +1,4 @@
-# Partiva Admin Backend
+git# Partiva Admin Backend
 
 REST API powering the Partiva Dashboard (admin CMS) and the Partiva public Website. Handles authentication, RBAC, content management (articles, pages/sections, pricing, FAQ, testimonials, contact info, media), and audit logging.
 
